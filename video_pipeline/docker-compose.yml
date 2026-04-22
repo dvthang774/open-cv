@@ -1,0 +1,154 @@
+name: video-pipeline
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.3.11
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: vp
+      POSTGRES_PASSWORD: vp
+      POSTGRES_DB: vp
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vp -d vp"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/ready || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      VP_ENV: dev
+      VP_KAFKA_BOOTSTRAP: redpanda:9092
+      VP_DB_DSN: postgresql://vp:vp@postgres:5432/vp
+      VP_S3_ENDPOINT: http://minio:9000
+      VP_S3_ACCESS_KEY: minioadmin
+      VP_S3_SECRET_KEY: minioadmin
+      VP_S3_BUCKET: videos
+      VP_S3_REGION: us-east-1
+      # Presigned URLs are used by the Streamlit server (inside Docker network),
+      # so they must point to the internal MinIO hostname, not localhost.
+      VP_PUBLIC_S3_ENDPOINT: http://minio:9000
+    ports:
+      - "8000:8000"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  segment-worker:
+    build:
+      context: .
+      dockerfile: docker/segment-worker.Dockerfile
+    environment:
+      VP_ENV: dev
+      VP_KAFKA_BOOTSTRAP: redpanda:9092
+      VP_DB_DSN: postgresql://vp:vp@postgres:5432/vp
+      VP_S3_ENDPOINT: http://minio:9000
+      VP_S3_ACCESS_KEY: minioadmin
+      VP_S3_SECRET_KEY: minioadmin
+      VP_S3_BUCKET: videos
+      VP_S3_REGION: us-east-1
+      VP_SEGMENT_SECONDS: "10"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  ai-worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    environment:
+      VP_ENV: dev
+      VP_KAFKA_BOOTSTRAP: redpanda:9092
+      VP_DB_DSN: postgresql://vp:vp@postgres:5432/vp
+      VP_S3_ENDPOINT: http://minio:9000
+      VP_S3_ACCESS_KEY: minioadmin
+      VP_S3_SECRET_KEY: minioadmin
+      VP_S3_BUCKET: videos
+      VP_S3_REGION: us-east-1
+    command: ["python", "-m", "app.workers.ai_worker"]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: .
+      dockerfile: docker/streamlit.Dockerfile
+    environment:
+      # Streamlit code runs inside container; use internal DNS for requests.
+      API_INTERNAL: http://api:8000
+      WS_INTERNAL: ws://api:8000
+      # Optional: public URLs (for display/debug only).
+      API_PUBLIC: http://localhost:8000
+      WS_PUBLIC: ws://localhost:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  pgdata:
+  miniodata:
+
