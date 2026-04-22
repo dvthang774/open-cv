@@ -1,108 +1,108 @@
 ## Chunk upload (multipart): retry + validation
 
-POC này dùng **presigned multipart upload** lên MinIO (S3-compatible).
+This POC uses **presigned multipart upload** to MinIO (S3-compatible).
 
-Ý tưởng chính:
-- API chỉ làm **control-plane**: tạo `upload_id`, cấp presigned URL, complete upload, publish Kafka event.
-- Client/UI upload data **trực tiếp** lên MinIO qua presigned URL (không đi qua API).
+Key idea:
+- The API is **control-plane only**: create `upload_id`, issue presigned URLs, complete the upload, publish Kafka events.
+- The client/UI uploads bytes **directly** to MinIO via presigned URLs (data does not flow through the API).
 
 ---
 
-### Luồng chuẩn (happy path)
+### Happy path flow
 
-1) Tạo `video_id`
+1) Create `video_id`
 - `POST /videos`
 
 2) Init multipart
 - `POST /videos/{video_id}/multipart/init`
-- Trả về `upload_id`
+- Returns `upload_id`
 
-3) Upload từng part (chunk)
-- Với mỗi `part_number` (bắt đầu từ 1):
+3) Upload each part (chunk)
+- For each `part_number` (starting at 1):
   - `POST /videos/{video_id}/multipart/part-url?upload_id=...&part_number=N`
-  - `PUT` bytes của chunk lên URL trả về
-  - Nhận `ETag` từ response header
+  - `PUT` the chunk bytes to the returned URL
+  - Read `ETag` from the response headers
 
 4) Complete multipart
 - `POST /videos/{video_id}/multipart/complete`
-- Body gồm `upload_id` và list `parts = [{ETag, PartNumber}, ...]`
-- Sau khi complete thành công, API publish Kafka event `video.raw.uploaded`
+- Body contains `upload_id` and a list `parts = [{ETag, PartNumber}, ...]`
+- After a successful completion, the API publishes Kafka event `video.raw.uploaded`
 
 ---
 
-### Retry part fail: làm thế nào cho đúng?
+### Retrying failed parts: the correct way
 
-#### Nguyên tắc
-- Multipart upload là **idempotent theo PartNumber**:
-  - Nếu part N upload fail → retry **chỉ part N**
-  - Không cần upload lại toàn bộ file
+#### Principles
+- Multipart upload is **idempotent by PartNumber**:
+  - If part N fails → retry **only part N**
+  - No need to re-upload the whole file
 
-#### Khuyến nghị thực tế
-- **Exponential backoff**: 1s → 2s → 4s → 8s (giới hạn max, ví dụ 10–30s)
-- **Giới hạn concurrency** (upload song song):
-  - Quá cao dễ nghẽn network hoặc overload MinIO
-  - POC UI đang cho chỉnh `Max parallel uploads`
+#### Practical 
+- **Exponential backoff**: 1s → 2s → 4s → 8s (cap at e.g. 10–30s)
+- **Limit concurrency** (parallel uploads):
+  - Too high can saturate network or overload MinIO
+  - The POC UI exposes `Max parallel uploads`
 
-#### Khi retry, thay gì?
-- Chỉ gọi lại:
-  - presign part URL (an toàn, URL có expiry)
-  - upload lại bytes của part đó
-- Nhận `ETag` mới (có thể khác) và **thay vào list parts** trước khi complete
+#### What changes when retrying?
+- You only need to redo:
+  - presign the part URL (safe; URLs expire)
+  - re-upload the bytes for that part
+- You may get a new `ETag` (it can differ); **replace it** in the `parts` list before completing
 
 ---
 
-### Validation: đảm bảo dữ liệu đúng và file complete
+### Validation: data integrity and completion correctness
 
 #### 1) Per-part validation (checksum)
-Mục tiêu: phát hiện corrupted chunk trong quá trình truyền.
+Goal: detect corrupted chunks during transfer.
 
-Tuỳ hệ S3/MinIO:
-- Có thể gửi `Content-MD5` khi `upload_part`
-- Nếu checksum sai → server trả lỗi → client retry part
+Depending on S3/MinIO capabilities:
+- You can provide `Content-MD5` on `upload_part`
+- If the checksum is wrong → server returns an error → client retries that part
 
-POC hiện tại:
-- Endpoint presign hỗ trợ truyền `content_md5` (optional).
-- Streamlit UI mặc định **bật** `Content-MD5` và sẽ:
-  - tính MD5 cho từng chunk
-  - gửi `content_md5` lên endpoint presign
-  - `PUT` kèm header `Content-MD5`
+In this POC:
+- The presign endpoint supports `content_md5` (optional).
+- The Streamlit UI enables `Content-MD5` by default and will:
+  - compute MD5 per chunk
+  - pass `content_md5` to the presign endpoint
+  - `PUT` with the `Content-MD5` header
 
 #### 2) Completion validation (ETag list)
-Mục tiêu: đảm bảo đủ part và đúng thứ tự khi merge.
+Goal: ensure all parts exist and the merge order is correct.
 
-Khi gọi `complete_multipart_upload`:
-- Bạn phải gửi list `parts` với `PartNumber` + `ETag`
-- **Bắt buộc sort theo `PartNumber` tăng dần**
+When calling `complete_multipart_upload`:
+- You must send `parts` with `PartNumber` + `ETag`
+- You **must** sort by `PartNumber` ascending
 
 POC UI:
-- Sau khi upload song song, UI **sort parts theo `PartNumber`** trước khi gọi complete.
-- API cũng sort `parts` để “defensive”.
+- After parallel uploads, the UI **sorts parts by `PartNumber`** before completing.
+- The API also sorts `parts` defensively.
 
 #### 3) Final checksum (SHA256)
-Mục tiêu: có một checksum “ổn định” cho **toàn bộ file** (vì ETag của multipart không phải MD5 của file).
+Goal: have a stable checksum for the **entire file** (multipart `ETag` is not the file MD5).
 
 POC:
-- Streamlit UI có tuỳ chọn tính **SHA256** của toàn bộ file và gửi lên `complete` qua field `checksum`.
-- API lưu checksum này vào cột `videos.checksum`.
+- The Streamlit UI can compute the file **SHA256** and send it to `complete` via the `checksum` field.
+- The API stores it in `videos.checksum`.
 
-#### 3) “Gate” để không trigger pipeline sớm
-Nguyên tắc:
-- **Chỉ publish Kafka event sau khi complete thành công**
+#### 4) A “gate” to avoid triggering the pipeline too early
+Principle:
+- **Only publish Kafka events after the multipart completion succeeds**
 
-Vì:
-- Worker segmentation đọc `raw/{video_id}.mp4`; nếu file chưa complete thì worker sẽ fail hoặc đọc sai.
+Because:
+- The segmentation worker reads `raw/{video_id}.mp4`; if the file is not complete, it may fail or read inconsistent data.
 
 ---
 
-### Lỗi thường gặp
+### Common pitfalls
 
-- **Presigned URL trỏ `localhost` trong Docker**
-  - Nếu uploader chạy trong container (Streamlit server-side), URL phải là `http://minio:9000/...`
-  - Nếu uploader chạy ở browser (client-side), URL cần host public như `http://localhost:9000/...`
+- **Presigned URL points to `localhost` inside Docker**
+  - If the uploader runs inside a container (Streamlit server-side), the URL must use `http://minio:9000/...`
+  - If the uploader runs in the browser (client-side), the URL must use a public host like `http://localhost:9000/...`
 
-- **Quên sort `parts`**
-  - Complete có thể fail hoặc merge sai → luôn sort theo `PartNumber`
+- **Forgetting to sort `parts`**
+  - Completion can fail or merge incorrectly → always sort by `PartNumber`
 
-- **ETag thiếu hoặc sai format**
-  - Nhiều S3 trả `ETag` có dấu ngoặc kép; giữ nguyên đúng value nhận được.
+- **Missing or misformatted `ETag`**
+  - Many S3 implementations return quoted ETags; keep the exact value you received.
 
