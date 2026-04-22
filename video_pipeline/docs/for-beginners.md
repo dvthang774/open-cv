@@ -14,46 +14,40 @@ Upload → Kafka → Segment (FFmpeg) → AI → Metadata → Realtime Notify
 ```mermaid
 flowchart LR
   %% External actors
-  U[User/Client] -->|Upload via UI| UI[Streamlit UI]
+  U[User/Client] -->|Upload| UI[Streamlit UI]
 
   %% Control plane
   UI -->|POST /videos| API[FastAPI API]
-  UI -->|POST /multipart/init| API
-  UI -->|POST /multipart/part-url| API
+  UI -->|POST /multipart| API
 
-  %% Data plane (bytes)
-  UI -->|PUT upload_part (chunks)| S3[(MinIO / S3 bucket)]
-  API -->|CompleteMultipartUpload| S3
-
-  %% Raw video stored
-  S3 -->|Object raw/{video_id}.mp4| S3
+  %% Data plane
+  UI -->|PUT chunks| S3[(MinIO / S3)]
+  API -->|Complete Upload| S3
 
   %% Events backbone
   API -->|publish video.raw.uploaded| K[(Kafka/Redpanda)]
-  API -->|publish video.status (UPLOADED)| K
 
   %% Segment processing
-  K -->|consume video.raw.uploaded| SW[segment-worker (FFmpeg)]
-  SW -->|GET raw/{video_id}.mp4| S3
-  SW -->|PUT processed/{video_id}/segments/*.mp4| S3
-  SW -->|INSERT segments + UPDATE videos.status| DB[(Postgres)]
+  K -->|consume| SW[segment-worker FFmpeg]
+  SW -->|GET raw| S3
+  SW -->|PUT segments| S3
+  SW -->|INSERT| DB[(Postgres)]
   SW -->|publish video.segment.completed| K
-  SW -->|publish video.status (SEGMENTING/SEGMENTED)| K
 
   %% AI processing
-  K -->|consume video.segment.completed| AW[ai-worker (AI)]
-  AW -->|PUT metadata/{video_id}/segments/*.json| S3
-  AW -->|INSERT tags + UPDATE videos.status| DB
-  AW -->|publish video.ai.completed| K
-  AW -->|publish video.finalized + video.status (DONE)| K
+  K -->|consume| AW[ai-worker AI]
+  AW -->|PUT metadata| S3
+  AW -->|INSERT tags| DB
+  AW -->|publish video.finalized| K
 
   %% Realtime notify
-  K -->|consume video.status/finalized/failed| API
-  API -->|WS /ws/{video_id}| UI
+  K -->|consume status| API
+  API -->|WS Notify| UI
 
   %% Query results
-  UI -->|GET /videos/{video_id}| API
-  API -->|SELECT videos/segments/tags| DB
+  UI -->|GET results| API
+  API -->|SELECT| DB
+
 ```
 
 ---

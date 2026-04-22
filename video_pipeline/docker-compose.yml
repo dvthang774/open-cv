@@ -122,6 +122,19 @@ services:
       VP_S3_SECRET_KEY: minioadmin
       VP_S3_BUCKET: videos
       VP_S3_REGION: us-east-1
+      # Professional: Model Registry on MinIO/S3
+      # Upload model to S3, then ai-worker will sync it on startup (ETag-aware).
+      # Example: s3://models/yolov8_v1.pt
+      # Enable YOLO + model sync by setting:
+      # VP_AI_MODE=yolo
+      # VP_MODEL_S3_BUCKET=models
+      # VP_MODEL_S3_KEY=yolov8_v1.pt
+      # VP_MODEL_CACHE_DIR=/var/cache/vp-models
+      VP_AI_MODE: stub
+      # Optional YOLO options
+      VP_YOLO_DEVICE: cpu
+      # VP_YOLO_CLASSES: "0,1,2"
+    entrypoint: ["/app/docker/ai-entrypoint.sh"]
     command: ["python", "-m", "app.workers.ai_worker"]
     depends_on:
       redpanda:
