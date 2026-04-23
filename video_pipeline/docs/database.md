@@ -26,7 +26,7 @@
 - **`segment_id`**: created by segment-worker (e.g., `s0001`, `s0002`, ...)
 - **`video_id`**: written by segment-worker for the current video
 - **`start_time`, `end_time`**: computed by segment-worker based on segmenting strategy (POC: time-based)
-- **`path`**: written by segment-worker after uploading to MinIO (`processed/{video_id}/segments/{segment_id}.mp4`)
+- **`path`**: written by segment-worker after uploading to MinIO (`segments/{video_id}/{segment_id}.mp4`)
 - **`created_at`**: set automatically by the DB on insert
 
 #### `tags`

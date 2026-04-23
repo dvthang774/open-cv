@@ -138,13 +138,26 @@ async def get_video(video_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="not found")
     segments = repo.list_segments(video_id)
     tags = repo.list_tags(video_id)
+    seg_out: list[dict[str, Any]] = []
+    for s in segments:
+        start_time = float(s.start_time)
+        end_time = float(s.end_time)
+        seg_out.append(
+            {
+                "segment_id": s.segment_id,
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration": max(0.0, end_time - start_time),
+                "file_path": s.path,
+            }
+        )
     return {
         "video_id": video.video_id,
         "raw_path": video.raw_path,
         "status": video.status,
         "created_at": video.created_at,
         "updated_at": video.updated_at,
-        "segments": [s.__dict__ for s in segments],
+        "segments": seg_out,
         "tags": tags,
     }
 

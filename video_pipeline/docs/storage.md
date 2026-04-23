@@ -3,13 +3,13 @@
 - Raw video:
   - `raw/{video_id}.mp4`
 - Segments:
-  - `processed/{video_id}/segments/{segment_id}.mp4`
+  - `segments/{video_id}/{segment_id}.mp4`
 - Per-segment metadata:
-  - `metadata/{video_id}/segments/{segment_id}.json`
+  - `metadata/{video_id}/{segment_id}.json`
 
-Metadata JSON includes (POC):
-- `timestamp` (segment start time, seconds)
-- `duration` (seconds)
-- `tags` (basic labels) + `confidence`
-- `quality` (optional): dark/blur metrics and pass/fail
+Metadata JSON schema (standardized):
+- `video_id`, `segment_id`
+- `start_time`, `end_time`, `duration` (seconds)
+- `labels` (list of strings)
+- `quality.is_dark`, `quality.is_blurry` (booleans)
 

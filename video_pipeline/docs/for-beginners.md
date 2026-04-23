@@ -1,4 +1,4 @@
-## For beginners: Video → Segments → AI tags (POC flow)
+## For beginners: Video → Segments → AI labels (POC flow)
 
 ---
 
@@ -191,17 +191,17 @@ This POC is designed to be run locally/on-prem using Docker Compose. Think of it
 - Raw video:
   - `raw/{video_id}.mp4`
 - Segments:
-  - `processed/{video_id}/segments/s0001.mp4`
-  - `processed/{video_id}/segments/s0002.mp4`
+  - `segments/{video_id}/s0001.mp4`
+  - `segments/{video_id}/s0002.mp4`
   - ...
 - Per-segment metadata (JSON):
-  - `metadata/{video_id}/segments/s0001.json`
+  - `metadata/{video_id}/s0001.json`
   - ...
 
 #### 2) Database (Postgres)
 - `videos`: overall video state (`UPLOADING`, `UPLOADED`, `SEGMENTING`, `SEGMENTED`, `AI_PROCESSING`, `DONE`)
 - `segments`: segment index (start/end time + path)
-- `tags`: AI tags per segment
+- `tags`: per-label index (this POC stores standardized `labels` in the `tags` table)
 - `processed_events`: idempotency (avoid duplicates on retry/replay)
 
 ---
@@ -234,9 +234,9 @@ The worker:
 #### Step D — AI worker runs AI on segments
 The worker:
 - Receives the segment list
-- Runs AI per segment (POC: random tags)
+- Runs AI per segment (POC: random labels)
 - Writes JSON metadata to MinIO
-- Writes tags to the `tags` table
+- Writes labels to the `tags` table (table name kept for POC compatibility)
 - Publishes:
   - `video.ai.completed` (per segment)
   - `video.status` (progress)
@@ -253,7 +253,7 @@ The UI shows stage-by-stage progress.
 
 ---
 
-### Example: 1 video → 6 segments → tags per segment
+### Example: 1 video → 6 segments → labels per segment
 
 Assume:
 - The video is ~60 seconds
@@ -261,34 +261,36 @@ Assume:
 
 You get 6 segments:
 
-| Segment | Time range | Output file (MinIO) | Example tags (POC) |
+| Segment | Time range | Output file (MinIO) | Example labels (POC) |
 |---|---:|---|---|
-| s0001 | 0–10s | `processed/{video_id}/segments/s0001.mp4` | `["person", "car"]` |
-| s0002 | 10–20s | `processed/{video_id}/segments/s0002.mp4` | `["text", "logo"]` |
-| s0003 | 20–30s | `processed/{video_id}/segments/s0003.mp4` | `["bicycle", "person"]` |
-| s0004 | 30–40s | `processed/{video_id}/segments/s0004.mp4` | `["animal", "person"]` |
-| s0005 | 40–50s | `processed/{video_id}/segments/s0005.mp4` | `["car", "logo"]` |
-| s0006 | 50–60s | `processed/{video_id}/segments/s0006.mp4` | `["text", "person"]` |
+| s0001 | 0–10s | `segments/{video_id}/s0001.mp4` | `["person", "car"]` |
+| s0002 | 10–20s | `segments/{video_id}/s0002.mp4` | `["text", "logo"]` |
+| s0003 | 20–30s | `segments/{video_id}/s0003.mp4` | `["bicycle", "person"]` |
+| s0004 | 30–40s | `segments/{video_id}/s0004.mp4` | `["animal", "person"]` |
+| s0005 | 40–50s | `segments/{video_id}/s0005.mp4` | `["car", "logo"]` |
+| s0006 | 50–60s | `segments/{video_id}/s0006.mp4` | `["text", "person"]` |
 
 Per-segment JSON metadata output (example `s0001`):
-- Key: `metadata/{video_id}/segments/s0001.json`
+- Key: `metadata/{video_id}/s0001.json`
 - Example content:
 
 ```json
 {
   "video_id": "v_xxx",
   "segment_id": "s0001",
-  "tags": ["person", "car"],
-  "confidence": [0.92, 0.81],
-  "created_at": "2026-04-22T03:00:00Z"
+  "start_time": 0,
+  "end_time": 10,
+  "duration": 10,
+  "labels": ["person", "car"],
+  "quality": {"is_blurry": false, "is_dark": false}
 }
 ```
 
-In the DB, `segments` will have 6 rows; `tags` will have multiple rows (one per tag).
+In the DB, `segments` will have 6 rows; `tags` will have multiple rows (one per label).
 
 ---
 
-### “Why don’t I see segments/tags right after upload completes?”
+### “Why don’t I see segments/labels right after upload completes?”
 Because upload completion only:
 - finalizes the object in MinIO
 - publishes an event so workers can start
@@ -300,7 +302,7 @@ Segmentation/AI are **async**, so they take time. You can track progress via:
 ---
 
 ### After the POC (next upgrades)
-- Replace stub tags with real models (YOLO/OCR/ASR)
+- Replace stub labels with real models (YOLO/OCR/ASR)
 - “1 segment = 1 task” (Kafka message per segment) for more parallelism and granular retries
 - Outbox pattern to keep DB + Kafka consistent during failures
 - Observability: metrics/tracing (Prometheus + OpenTelemetry)

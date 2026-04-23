@@ -33,6 +33,49 @@ class SegmentVideo:
         video_id = event["video_id"]
         raw_key = f"raw/{video_id}.mp4"
 
+        # Entity-level idempotency:
+        # if segments already exist for this video, do not re-run ffmpeg.
+        existing = self.repo.list_segments(video_id)
+        if existing:
+            segment_events: list[dict] = []
+            for s in existing:
+                duration = max(0.0, float(s.end_time) - float(s.start_time))
+                segment_events.append(
+                    {
+                        "segment_id": s.segment_id,
+                        "start_time": float(s.start_time),
+                        "end_time": float(s.end_time),
+                        "duration": duration,
+                        "file_path": s.path,
+                        # Backward compatible aliases (migration window)
+                        "id": s.segment_id,
+                        "start": float(s.start_time),
+                        "end": float(s.end_time),
+                        "path": s.path,
+                    }
+                )
+
+            self.repo.set_status(video_id, "SEGMENTED")
+            await self.bus.publish(
+                topic="video.status",
+                key=video_id,
+                event={
+                    "video_id": video_id,
+                    "status": "SEGMENTED",
+                    "progress": 70,
+                    "message": "Segmentation already completed (idempotent skip)",
+                },
+            )
+            out_event = {
+                "event_id": str(uuid.uuid4()),
+                "video_id": video_id,
+                "type": "VIDEO_SEGMENTED",
+                "segments": segment_events,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await self.bus.publish(topic="video.segment.completed", key=video_id, event=out_event)
+            return out_event
+
         workdir = f"/tmp/vp_{video_id}"
         os.makedirs(workdir, exist_ok=True)
         local_raw = os.path.join(workdir, "input.mp4")
@@ -59,22 +102,44 @@ class SegmentVideo:
         total = max(len(produced), 1)
         for idx, item in enumerate(produced, start=1):
             segment_id = item.get("segment_id") or f"s{idx:04d}"
-            seg_key = f"processed/{video_id}/segments/{segment_id}.mp4"
+            seg_key = f"segments/{video_id}/{segment_id}.mp4"
             self.storage.upload_file(local_path=item["local_path"], key=seg_key, content_type="video/mp4")
+            start_time = float(item["start_time"])
+            end_time = float(item["end_time"])
+            duration = max(0.0, end_time - start_time)
+            if duration <= 0:
+                await self.bus.publish(
+                    topic="video.status",
+                    key=video_id,
+                    event={
+                        "video_id": video_id,
+                        "status": "SEGMENTING",
+                        "progress": 10 + int((idx / total) * 60),
+                        "message": f"Skipped invalid segment {segment_id} (duration<=0)",
+                    },
+                )
+                continue
+
             seg = Segment(
                 segment_id=segment_id,
                 video_id=video_id,
-                start_time=float(item["start_time"]),
-                end_time=float(item["end_time"]),
+                start_time=start_time,
+                end_time=end_time,
                 path=f"s3://{self.settings.s3_bucket}/{seg_key}",
             )
             segments.append(seg)
             segment_events.append(
                 {
+                    "segment_id": segment_id,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "duration": duration,
+                    "file_path": seg.path,
+                    # Backward compatible aliases (migration window)
                     "id": segment_id,
                     "path": seg.path,
-                    "start": seg.start_time,
-                    "end": seg.end_time,
+                    "start": start_time,
+                    "end": end_time,
                 }
             )
             await self.bus.publish(

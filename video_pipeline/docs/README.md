@@ -5,6 +5,7 @@
 - `events.md`: Kafka topics + payload contracts
 - `storage.md`: MinIO layout
 - `database.md`: Postgres schema + idempotency
+- `plan-standardization-segments-metadata.md`: standardization plan for segment fields, canonical storage layout, cleaned metadata schema, quality checks, idempotency
 - `realtime.md`: WebSocket flow + status fanout
 - `ui.md`: Streamlit page (upload + status + segment preview)
 - `for-beginners.md`: beginner-friendly explanation + example

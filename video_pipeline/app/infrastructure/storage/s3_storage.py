@@ -88,6 +88,13 @@ class S3Storage(Storage):
             HttpMethod="GET",
         )
 
+    def exists(self, *, key: str) -> bool:
+        try:
+            self._client.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except Exception:
+            return False
+
     def download_to_file(self, *, key: str, local_path: str) -> None:
         self._client.download_file(self.bucket, key, local_path)
 

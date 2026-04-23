@@ -51,6 +51,8 @@ This project treats the YOLO weights file as an artifact stored in MinIO/S3 (lik
 2) Init multipart + upload at least 1 part to MinIO using presigned URL
 3) Complete multipart → workers should process
 4) `GET /videos/{video_id}` → expect `DONE`, see segments + tags
+   - segments now include `duration` and `file_path`
+   - metadata JSON is standardized with `labels` + `quality` flags (see `docs/storage.md`)
 5) Connect WS `/ws/{video_id}` to see progress from `video.status`
 
 Tip:

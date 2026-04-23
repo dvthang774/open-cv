@@ -24,6 +24,21 @@ class ProcessAI:
 
     TAG_POOL = ["person", "car", "text", "logo", "animal", "bicycle"]
 
+    def _clean_labels(self, labels: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for x in labels:
+            v = str(x).strip().lower()
+            if not v or v in seen:
+                continue
+            seen.add(v)
+            cleaned.append(v)
+        return cleaned
+
+    def _s3_key_from_uri(self, uri: str) -> str:
+        # Expected: s3://{bucket}/{key}
+        return uri.split("/", 3)[-1] if uri.startswith("s3://") else uri
+
     def __init__(self, *, repo: VideoRepo, storage: Storage, bus: EventBus, settings: Settings):
         self.repo = repo
         self.storage = storage
@@ -218,14 +233,45 @@ class ProcessAI:
         completed: list[dict] = []
         total = max(len(segments), 1)
         for seg in segments:
-            segment_id = seg["id"]
-            start_time = float(seg.get("start", 0.0))
-            end_time = float(seg.get("end", 0.0))
-            duration = max(0.0, end_time - start_time)
+            segment_id = seg.get("segment_id") or seg.get("id")
+            if not segment_id:
+                continue
+
+            start_time = float(seg.get("start_time", seg.get("start", 0.0)))
+            end_time = float(seg.get("end_time", seg.get("end", 0.0)))
+            duration = float(seg.get("duration", max(0.0, end_time - start_time)))
             mode = self._ai_mode()
-            # seg["path"] is s3://bucket/key
-            s3_path = seg.get("path") or ""
-            key = s3_path.split("/", 3)[-1] if s3_path.startswith("s3://") else s3_path
+
+            # Entity-level idempotency: if metadata already exists, skip processing and avoid duplicate DB tags.
+            meta_key = f"metadata/{video_id}/{segment_id}.json"
+            if self.storage.exists(key=meta_key):
+                completed.append(
+                    {
+                        "event_id": str(uuid.uuid4()),
+                        "video_id": video_id,
+                        "type": "SEGMENT_AI_COMPLETED",
+                        "segment_id": segment_id,
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "duration": duration,
+                        "skipped": "metadata_exists",
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                await self.bus.publish(
+                    topic="video.status",
+                    key=video_id,
+                    event={
+                        "video_id": video_id,
+                        "status": "AI_PROCESSING",
+                        "progress": 75 + int((len(completed) / total) * 20),
+                        "message": f"AI skipped {len(completed)}/{total} (metadata exists)",
+                    },
+                )
+                continue
+
+            file_path = seg.get("file_path") or seg.get("path") or ""
+            key = self._s3_key_from_uri(file_path)
             with tempfile.TemporaryDirectory(prefix="vp_ai_") as td:
                 local_path = os.path.join(td, f"{segment_id}.mp4")
                 self.storage.download_to_file(key=key, local_path=local_path)
@@ -235,7 +281,7 @@ class ProcessAI:
                     try:
                         quality = self._quality_filter(local_video_path=local_path, duration=duration)
                     except Exception as e:  # noqa: BLE001
-                        quality = {"enabled": True, "error": repr(e), "passed": True}
+                        quality = {"enabled": True, "error": repr(e), "passed": True, "is_dark": False, "is_blurry": False}
 
                 qf_failed = bool(quality.get("enabled")) and (quality.get("passed") is False)
                 if qf_failed and self._qf_skip_on_fail():
@@ -254,26 +300,25 @@ class ProcessAI:
                         tags = ["low_quality", *tags]
                         scores = [1.0, *scores]
 
+            labels = self._clean_labels(tags)
+            is_dark = bool(quality.get("is_dark", False))
+            is_blurry = bool(quality.get("is_blurry", False))
+
             meta = {
                 "video_id": video_id,
                 "segment_id": segment_id,
-                "timestamp": start_time,
                 "start_time": start_time,
                 "end_time": end_time,
                 "duration": duration,
-                "tags": tags,
-                "confidence": scores,
-                "quality": quality,
-                "debug": debug,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "labels": labels,
+                "quality": {"is_blurry": is_blurry, "is_dark": is_dark},
             }
-            meta_key = f"metadata/{video_id}/segments/{segment_id}.json"
             self.storage.put_json(key=meta_key, data=meta)
 
             self.repo.insert_tags(
                 video_id=video_id,
                 segment_id=segment_id,
-                tags=list(zip(tags, scores, strict=False)),
+                tags=list(zip(labels, scores[: len(labels)], strict=False)),
             )
 
             out = {
@@ -281,11 +326,12 @@ class ProcessAI:
                 "video_id": video_id,
                 "type": "SEGMENT_AI_COMPLETED",
                 "segment_id": segment_id,
-                "timestamp": start_time,
                 "duration": duration,
-                "tags": tags,
-                "confidence": scores,
-                "created_at": meta["created_at"],
+                "start_time": start_time,
+                "end_time": end_time,
+                "labels": labels,
+                "quality": {"is_blurry": is_blurry, "is_dark": is_dark},
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
             await self.bus.publish(topic="video.ai.completed", key=video_id, event=out)
             completed.append(out)

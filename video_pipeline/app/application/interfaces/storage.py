@@ -22,6 +22,9 @@ class Storage(ABC):
     def presign_get_object(self, *, key: str) -> str: ...
 
     @abstractmethod
+    def exists(self, *, key: str) -> bool: ...
+
+    @abstractmethod
     def download_to_file(self, *, key: str, local_path: str) -> None: ...
 
     @abstractmethod
