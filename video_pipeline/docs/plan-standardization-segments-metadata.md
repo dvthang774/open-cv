@@ -20,6 +20,10 @@ Non-negotiables:
 - `duration` (float seconds) = `max(0.0, end_time - start_time)`
 - `file_path` (S3/MinIO URI): `s3://{bucket}/segments/{video_id}/{segment_id}.mp4`
 
+Why this matters for 10–20 min continuous video:
+- You get **small, retryable units** (1 minute) instead of one large fragile job.
+- `segment_id` + deterministic keys allow safe retries and re-processing without duplication.
+
 #### Per-segment metadata JSON (written by ai-worker)
 
 ```json
@@ -41,6 +45,10 @@ Cleaning rules:
 - **Time fields** are always float seconds; `duration` must be non-negative.
 - **labels** are cleaned: trim, lowercase, de-dup (stable ordering recommended).
 - **quality flags** are always booleans (never missing).
+
+Why we store `labels` (not `tags`) here:
+- “labels” is the common production vocabulary for model outputs (portable across models/vendors).
+- It keeps the JSON schema stable while the model implementation changes.
 
 ---
 
@@ -67,6 +75,10 @@ Failure handling (production hygiene):
 - If quality computation fails, **do not crash the pipeline**.
 - Default `is_dark/is_blurry` to `false/false` (and optionally record error in logs only).
 
+Why a simple heuristic helps:
+- Lets you flag low-quality segments early (night camera, motion blur) without heavy inference.
+- Gives UI/analytics a stable signal (`is_dark/is_blurry`) even if the AI model is disabled/stubbed.
+
 ---
 
 ### Idempotency (absolute no-duplicates)
@@ -89,6 +101,9 @@ Guardrail:
 - For each segment, check if `metadata/{video_id}/{segment_id}.json` exists and matches schema:
   - if valid → skip
   - else → regenerate and overwrite the deterministic key
+
+Production note:
+- “Exists” check is the minimum. For strict correctness, validate JSON schema/fields (and optionally a schema_version) before skipping.
 
 ---
 

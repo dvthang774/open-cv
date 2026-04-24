@@ -21,7 +21,6 @@ Upload → Kafka → Segment → AI → Metadata → Realtime Notify
 
 ### Requirements coverage (current POC)
 - **Split into 1-minute segments**: supported via config `VP_SEGMENT_SECONDS=60` (default may differ).
-- **Per-segment metadata**: `metadata/{video_id}/segments/{segment_id}.json` contains `timestamp`, `duration`, and basic `tags`.
 - **Per-segment metadata**: `metadata/{video_id}/{segment_id}.json` contains `start_time/end_time/duration`, cleaned `labels`, and `quality` flags.
 - **Clear S3/MinIO structure**: `raw/`, `segments/`, `metadata/` prefixes (see `docs/storage.md`).
 - **Optional quality filtering (blur/dark)**: implemented in AI stage (configurable via env; can tag `low_quality` and optionally skip YOLO).

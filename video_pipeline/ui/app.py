@@ -303,6 +303,7 @@ with col2:
         snap = st.session_state.get("video_snapshot")
         last = st.session_state.get("last_status")
         log = st.session_state.get("status_log", [])
+        ws_errors = st.session_state.get("ws_errors", [])
 
         # Derive stage status from realtime messages
         stage_progress = {
@@ -324,6 +325,25 @@ with col2:
                 stage_progress["AI"] = {"status": stt, "progress": prog, "message": msg}
             elif stt in ("DONE", "FAILED"):
                 stage_progress["DONE"] = {"status": stt, "progress": prog, "message": msg}
+
+        # Fallback: if websocket is not delivering (common in Streamlit threads),
+        # derive stage from DB snapshot so the UI doesn't stay "PENDING".
+        if snap and all(v["status"] == "PENDING" for v in stage_progress.values()):
+            stt = (snap.get("status") or "").upper()
+            if stt in ("UPLOADING", "UPLOADED"):
+                stage_progress["UPLOAD"] = {"status": stt, "progress": 5 if stt == "UPLOADED" else 1, "message": ""}
+            elif stt in ("SEGMENTING", "SEGMENTED"):
+                stage_progress["UPLOAD"] = {"status": "UPLOADED", "progress": 5, "message": ""}
+                stage_progress["SEGMENT"] = {"status": stt, "progress": 70 if stt == "SEGMENTED" else 30, "message": ""}
+            elif stt in ("AI_PROCESSING",):
+                stage_progress["UPLOAD"] = {"status": "UPLOADED", "progress": 5, "message": ""}
+                stage_progress["SEGMENT"] = {"status": "SEGMENTED", "progress": 70, "message": ""}
+                stage_progress["AI"] = {"status": stt, "progress": 85, "message": ""}
+            elif stt in ("DONE", "FAILED"):
+                stage_progress["UPLOAD"] = {"status": "UPLOADED", "progress": 5, "message": ""}
+                stage_progress["SEGMENT"] = {"status": "SEGMENTED", "progress": 70, "message": ""}
+                stage_progress["AI"] = {"status": "AI_PROCESSING", "progress": 95, "message": ""}
+                stage_progress["DONE"] = {"status": stt, "progress": 100 if stt == "DONE" else 100, "message": ""}
 
         with placeholder.container():
             st.markdown("**Realtime stages (workers progress)**")
@@ -347,6 +367,9 @@ with col2:
             c4.progress(max(0, min(100, int(stage_progress["DONE"]["progress"]))))
             if stage_progress["DONE"]["message"]:
                 c4.caption(stage_progress["DONE"]["message"])
+
+            if ws_errors:
+                st.warning(f"WebSocket errors (latest): {ws_errors[-1]}")
 
             if last:
                 st.markdown("**Latest realtime status**")

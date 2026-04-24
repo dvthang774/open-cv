@@ -1,5 +1,7 @@
 ## Kafka topics (POC)
 
+This file is the **data contract** between services. For production scaling, prefer adding fields (backward compatible) over renaming/removing fields.
+
 ### `video.raw.uploaded`
 Emitted by API after multipart complete.
 
@@ -13,6 +15,11 @@ Fields:
 
 ### `video.segment.completed`
 Emitted by segment-worker after segmentation.
+
+Why these fields exist:
+- `segment_id`: stable identifier for idempotency and deterministic storage keys
+- `start_time/end_time/duration`: normalize time units (seconds) and support downstream logic
+- `file_path`: canonical location of the segment object in MinIO/S3
 
 Fields:
 - `event_id`
@@ -29,6 +36,10 @@ Fields:
 
 ### `video.ai.completed`
 Emitted by ai-worker per segment (POC stub).
+
+Why the payload is “clean”:
+- Downstream consumers (UI, analytics, search indexing) should not depend on model-specific debug fields.
+- `labels` and quality flags are normalized, stable, and easy to query.
 
 Fields:
 - `event_id`
